@@ -417,10 +417,12 @@ class TestTimedeltaRoundTrip:
     def test_negative_timedelta_to_str(self):
         assert _timedelta_to_str(timedelta(hours=-1)) == '-1h'
         assert _timedelta_to_str(timedelta(days=-2, hours=-3)) == '-2d3h'
+        assert _timedelta_to_str(timedelta(microseconds=-500)) == '-500us'
 
     def test_negative_timedelta_from_str(self):
         assert _str_to_timedelta('-1h') == timedelta(hours=-1)
         assert _str_to_timedelta('-2d3h') == timedelta(days=-2, hours=-3)
+        assert _str_to_timedelta('-500us') == timedelta(microseconds=-500)
 
     def test_round_trip_simple(self, tmp_path):
         p = tmp_path / 'data.json'
