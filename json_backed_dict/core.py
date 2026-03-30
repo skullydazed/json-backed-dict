@@ -529,7 +529,7 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         with self._lock:
             if not isinstance(other, dict):
                 return NotImplemented  # type: ignore[return-value]
-            merged = dict(self)
+            merged = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
             merged.update(other)
             return merged
 
@@ -538,7 +538,7 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             if not isinstance(other, dict):
                 return NotImplemented  # type: ignore[return-value]
             merged = dict(other)
-            merged.update(self)
+            merged.update({k: dict.__getitem__(self, k) for k in dict.__iter__(self)})
             return merged
 
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
@@ -570,17 +570,28 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             self._save()
             return result
 
+    def keys(self) -> Any:  # type: ignore[override]
+        with self._lock:
+            return list(dict.__iter__(self))
+
     def values(self) -> Any:  # type: ignore[override]
         with self._lock:
-            return [_wrap(v, self) for v in super().values()]
+            return [_wrap(dict.__getitem__(self, k), self) for k in dict.__iter__(self)]
 
     def items(self) -> Any:  # type: ignore[override]
         with self._lock:
-            return [(k, _wrap(v, self)) for k, v in super().items()]
+            return [(k, _wrap(dict.__getitem__(self, k), self)) for k in dict.__iter__(self)]
+
+    def copy(self) -> dict:  # type: ignore[override]
+        # Returns a plain dict with raw (unwrapped) values; proxy objects are
+        # an implementation detail of JsonBackedDict and are not exposed here.
+        with self._lock:
+            return {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
 
     def __repr__(self) -> str:
         with self._lock:
-            return f'{type(self).__name__}({self._path!r}, {dict(self)!r})'
+            raw = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
+            return f'{type(self).__name__}({self._path!r}, {raw!r})'
 
     # Prevent pickle/copy from bypassing __init__ and missing _path.
     # Unpickling calls __init__(path), which reloads from the file. We do not
