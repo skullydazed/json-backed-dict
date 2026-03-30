@@ -562,3 +562,144 @@ class TestRoundTrip:
         d2 = self._reload(p)
         assert d2['flag'] is True
         assert d2['num'] == 1
+
+    def test_date_string_coerces_to_date_on_reload(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        d['v'] = date(2024, 1, 15)  # stored as "2024-01-15"
+        d2 = self._reload(p)
+        assert type(d2['v']) is date
+        assert d2['v'] == date(2024, 1, 15)
+
+    def test_datetime_string_coerces_to_datetime_on_reload(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        d['v'] = datetime(2024, 1, 15, 10, 30)
+        d2 = self._reload(p)
+        assert isinstance(d2['v'], datetime)
+        assert d2['v'] == datetime(2024, 1, 15, 10, 30)
+
+    def test_timedelta_string_coerces_to_timedelta_on_reload(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        d['v'] = timedelta(days=1, hours=2)  # stored as "1d2h"
+        d2 = self._reload(p)
+        assert isinstance(d2['v'], timedelta)
+        assert d2['v'] == timedelta(days=1, hours=2)
+
+
+# ---------------------------------------------------------------------------
+# 10. Nested mutations
+# ---------------------------------------------------------------------------
+
+
+class TestNestedMutations:
+    def _reload(self, path: Path) -> JsonBackedDict:
+        return JsonBackedDict(path)
+
+    def test_nested_dict_setitem_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'timeout': 10}})
+        d['cfg']['timeout'] = 30
+        d2 = self._reload(p)
+        assert d2['cfg']['timeout'] == 30
+
+    def test_nested_dict_delitem_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'a': 1, 'b': 2}})
+        del d['cfg']['a']
+        d2 = self._reload(p)
+        assert 'a' not in d2['cfg']
+        assert d2['cfg']['b'] == 2
+
+    def test_deeply_nested_setitem_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': {'b': {'c': 1}}})
+        d['a']['b']['c'] = 99
+        d2 = self._reload(p)
+        assert d2['a']['b']['c'] == 99
+
+    def test_nested_list_append_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'items': [1, 2]})
+        d['items'].append(3)
+        d2 = self._reload(p)
+        assert d2['items'] == [1, 2, 3]
+
+    def test_nested_list_setitem_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'items': [1, 2, 3]})
+        d['items'][0] = 99
+        d2 = self._reload(p)
+        assert d2['items'] == [99, 2, 3]
+
+    def test_nested_list_delitem_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'items': [1, 2, 3]})
+        del d['items'][1]
+        d2 = self._reload(p)
+        assert d2['items'] == [1, 3]
+
+    def test_nested_list_extend_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'items': [1]})
+        d['items'].extend([2, 3])
+        d2 = self._reload(p)
+        assert d2['items'] == [1, 2, 3]
+
+    def test_assign_proxy_as_value(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'src': {'x': 1}, 'dst': {}})
+        d['dst'] = d['src']
+        d2 = self._reload(p)
+        assert d2['dst'] == {'x': 1}
+
+    def test_get_returns_proxy_for_dict(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'k': 'v'}})
+        proxy = d.get('cfg')
+        proxy['k'] = 'changed'
+        d2 = self._reload(p)
+        assert d2['cfg']['k'] == 'changed'
+
+    def test_nested_dict_update_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'a': 1}})
+        d['cfg'].update({'b': 2})
+        d2 = self._reload(p)
+        assert d2['cfg'] == {'a': 1, 'b': 2}
+
+    def test_nested_list_sort_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'nums': [3, 1, 2]})
+        d['nums'].sort()
+        d2 = self._reload(p)
+        assert d2['nums'] == [1, 2, 3]
+
+    def test_nested_list_reverse_persists(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'nums': [1, 2, 3]})
+        d['nums'].reverse()
+        d2 = self._reload(p)
+        assert d2['nums'] == [3, 2, 1]
+
+
+# ---------------------------------------------------------------------------
+# 11. Additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAdditionalEdgeCases:
+    def test_pop_missing_with_default_no_file_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 1})
+        mtime_before = p.stat().st_mtime_ns
+        result = d.pop('missing', 'fallback')
+        assert result == 'fallback'
+        assert p.stat().st_mtime_ns == mtime_before
+
+    def test_corrupted_json_raises_value_error_with_path(self, tmp_path):
+        p = tmp_path / 'data.json'
+        p.write_bytes(b'{not valid json')
+        with pytest.raises(ValueError, match=str(p)):
+            JsonBackedDict(p)

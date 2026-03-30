@@ -108,8 +108,6 @@ def _decode_value(v: Any) -> Any:
 
 # --- Validation ---
 
-_VALID_LEAF_TYPES = (str, bool, int, float, type(None), datetime, date, time, timedelta)
-
 
 def _validate_json_value(value: Any, path: str = 'root') -> None:
     # Check bool before int (bool is subclass of int)
@@ -132,6 +130,22 @@ def _validate_json_value(value: Any, path: str = 'root') -> None:
     raise TypeError(
         f'Value at {path} has unsupported type {type(value).__name__!r}: {value!r}'
     )
+
+
+# --- Proxy unwrap helper ---
+
+
+def _deep_unwrap(value: Any) -> Any:
+    """Recursively strip _ProxyDict/_ProxyList wrappers, returning plain dicts/lists."""
+    if isinstance(value, _ProxyDict):
+        return {k: _deep_unwrap(v) for k, v in value._data.items()}
+    if isinstance(value, _ProxyList):
+        return [_deep_unwrap(v) for v in value._data]
+    if isinstance(value, dict):
+        return {k: _deep_unwrap(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_unwrap(v) for v in value]
+    return value
 
 
 # --- Atomic write ---
@@ -157,16 +171,239 @@ def _atomic_write(dest: Path, data: bytes) -> None:
                 pass
 
 
+# --- Proxy classes ---
+
+
+def _wrap(value: Any, root: 'JsonBackedDict') -> Any:
+    if isinstance(value, dict):
+        return _ProxyDict(value, root)
+    if isinstance(value, list):
+        return _ProxyList(value, root)
+    return value
+
+
+class _ProxyDict:
+    """Transparent proxy for a nested dict that propagates mutations to the root
+    JsonBackedDict."""
+
+    __slots__ = ('_data', '_root')
+
+    def __init__(self, data: dict, root: 'JsonBackedDict') -> None:
+        object.__setattr__(self, '_data', data)
+        object.__setattr__(self, '_root', root)
+
+    def __getitem__(self, key: str) -> Any:
+        return _wrap(self._data[key], self._root)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if not isinstance(key, str):
+            raise TypeError(f'Keys must be str, got {type(key).__name__!r}')
+        value = _deep_unwrap(value)
+        _validate_json_value(value)
+        self._data[key] = value
+        self._root._save()
+
+    def __delitem__(self, key: str) -> None:
+        del self._data[key]
+        self._root._save()
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _ProxyDict):
+            return self._data == other._data
+        return self._data == other
+
+    def __repr__(self) -> str:
+        return repr(self._data)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return _wrap(self._data.get(key, default), self._root)
+
+    def keys(self) -> Any:
+        return self._data.keys()
+
+    def values(self) -> Any:
+        return (_wrap(v, self._root) for v in self._data.values())
+
+    def items(self) -> Any:
+        return ((k, _wrap(v, self._root)) for k, v in self._data.items())
+
+    def update(self, other: Any = (), /, **kwargs: Any) -> None:
+        merged = dict(other)
+        merged.update(kwargs)
+        for k, v in merged.items():
+            if not isinstance(k, str):
+                raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
+            _validate_json_value(_deep_unwrap(v))
+        for k, v in merged.items():
+            self._data[k] = _deep_unwrap(v)
+        self._root._save()
+
+    def pop(self, key: str, *args: Any) -> Any:
+        if key not in self._data and args:
+            return args[0]
+        result = self._data.pop(key, *args)
+        self._root._save()
+        return result
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if key in self._data:
+            return _wrap(self._data[key], self._root)
+        default = _deep_unwrap(default)
+        _validate_json_value(default)
+        self._data[key] = default
+        self._root._save()
+        return _wrap(default, self._root)
+
+    def popitem(self) -> tuple[str, Any]:
+        result = self._data.popitem()
+        self._root._save()
+        return result
+
+    def clear(self) -> None:
+        self._data.clear()
+        self._root._save()
+
+
+class _ProxyList:
+    """Transparent proxy for a nested list that propagates mutations to the root
+    JsonBackedDict."""
+
+    __slots__ = ('_data', '_root')
+
+    def __init__(self, data: list, root: 'JsonBackedDict') -> None:
+        object.__setattr__(self, '_data', data)
+        object.__setattr__(self, '_root', root)
+
+    def __getitem__(self, idx: Any) -> Any:
+        result = self._data[idx]
+        if isinstance(idx, slice):
+            return [_wrap(v, self._root) for v in result]
+        return _wrap(result, self._root)
+
+    def __setitem__(self, idx: Any, value: Any) -> None:
+        if isinstance(idx, slice):
+            items = [_deep_unwrap(v) for v in value]
+            for i, item in enumerate(items):
+                _validate_json_value(item, f'root[{i}]')
+            self._data[idx] = items
+        else:
+            value = _deep_unwrap(value)
+            _validate_json_value(value)
+            self._data[idx] = value
+        self._root._save()
+
+    def __delitem__(self, idx: Any) -> None:
+        del self._data[idx]
+        self._root._save()
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self) -> Iterator[Any]:
+        return (_wrap(v, self._root) for v in self._data)
+
+    def __contains__(self, item: object) -> bool:
+        return _deep_unwrap(item) in self._data
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _ProxyList):
+            return self._data == other._data
+        return self._data == other
+
+    def __repr__(self) -> str:
+        return repr(self._data)
+
+    def __iadd__(self, other: Any) -> '_ProxyList':
+        self.extend(other)
+        return self
+
+    def __imul__(self, n: int) -> '_ProxyList':
+        self._data *= n
+        self._root._save()
+        return self
+
+    def append(self, value: Any) -> None:
+        value = _deep_unwrap(value)
+        _validate_json_value(value)
+        self._data.append(value)
+        self._root._save()
+
+    def extend(self, values: Any) -> None:
+        items = [_deep_unwrap(v) for v in values]
+        for i, item in enumerate(items):
+            _validate_json_value(item, f'root[{i}]')
+        self._data.extend(items)
+        self._root._save()
+
+    def insert(self, idx: int, value: Any) -> None:
+        value = _deep_unwrap(value)
+        _validate_json_value(value)
+        self._data.insert(idx, value)
+        self._root._save()
+
+    def remove(self, value: Any) -> None:
+        self._data.remove(_deep_unwrap(value))
+        self._root._save()
+
+    def pop(self, idx: int = -1) -> Any:
+        result = self._data.pop(idx)
+        self._root._save()
+        return result
+
+    def clear(self) -> None:
+        self._data.clear()
+        self._root._save()
+
+    def sort(self, *, key: Any = None, reverse: bool = False) -> None:
+        self._data.sort(key=key, reverse=reverse)
+        self._root._save()
+
+    def reverse(self) -> None:
+        self._data.reverse()
+        self._root._save()
+
+
 # --- Main class ---
 
 
 class JsonBackedDict(dict):  # type: ignore[type-arg]
-    """A dict subclass that persists all mutations to a JSON file atomically."""
+    """A dict subclass that persists all mutations to a JSON file atomically.
+
+    String values that match ISO 8601 date/time patterns or the timedelta format
+    are automatically converted to their Python types on load. This means you
+    cannot store plain strings that look like dates, times, or timedeltas — they
+    will round-trip as the corresponding Python objects:
+
+        - ``"2024-01-15"``             → ``datetime.date(2024, 1, 15)``
+        - ``"2024-01-15T10:30:00"``    → ``datetime.datetime(2024, 1, 15, 10, 30)``
+        - ``"10:30:00"``               → ``datetime.time(10, 30)``
+        - ``"1d2h30m"``                → ``datetime.timedelta(days=1, hours=2,
+          minutes=30)``
+
+    Nested dict and list mutations are automatically persisted via proxy objects
+    returned by ``__getitem__`` and ``get()``. Mutating a nested value triggers
+    a full file save:
+
+        d['config']['timeout'] = 30   # persisted
+        d['items'].append('new')      # persisted
+    """
 
     def __init__(self, path: str | Path, initial: dict[str, Any] | None = None) -> None:
         self._path = Path(path)
         if self._path.exists():
-            raw = orjson.loads(self._path.read_bytes())
+            try:
+                raw = orjson.loads(self._path.read_bytes())
+            except Exception as e:
+                raise ValueError(f'Failed to load {self._path}: {e}') from e
             super().__init__(_decode_value(raw))
         else:
             if initial is not None:
@@ -182,9 +419,16 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         )
         _atomic_write(self._path, data)
 
+    def __getitem__(self, key: str) -> Any:
+        return _wrap(super().__getitem__(key), self)
+
+    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+        return _wrap(super().get(key, default), self)
+
     def __setitem__(self, key: str, value: Any) -> None:
         if not isinstance(key, str):
             raise TypeError(f'Keys must be str, got {type(key).__name__!r}')
+        value = _deep_unwrap(value)
         _validate_json_value(value)
         super().__setitem__(key, value)
         self._save()
@@ -199,11 +443,14 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         for k, v in merged.items():
             if not isinstance(k, str):
                 raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
-            _validate_json_value(v)
-        super().update(merged)
+            _validate_json_value(_deep_unwrap(v))
+        for k, v in merged.items():
+            super().__setitem__(k, _deep_unwrap(v))
         self._save()
 
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
+        if key not in self and args:
+            return args[0]
         result = super().pop(key, *args)
         self._save()
         return result
@@ -214,39 +461,29 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
 
     def setdefault(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
         if key in self:
-            return self[key]
+            return _wrap(super().__getitem__(key), self)
+        default = _deep_unwrap(default)
         _validate_json_value(default)
         super().__setitem__(key, default)
         self._save()
-        return default
+        return _wrap(default, self)
 
     def popitem(self) -> tuple[str, Any]:
         result = super().popitem()
         self._save()
         return result
 
+    def values(self) -> Any:  # type: ignore[override]
+        return (_wrap(v, self) for v in super().values())
+
+    def items(self) -> Any:  # type: ignore[override]
+        return ((k, _wrap(v, self)) for k, v in super().items())
+
     def __repr__(self) -> str:
         return f'{type(self).__name__}({self._path!r}, {dict(self)!r})'
 
-    # Prevent pickle/copy from bypassing __init__ and missing _path
+    # Prevent pickle/copy from bypassing __init__ and missing _path.
+    # Note: since every mutation is immediately saved, unpickling reloads from
+    # the current file state, which is always identical to the in-memory state.
     def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (self._path, dict(self)))
-
-    # Make iteration, keys, values, items work naturally via dict
-    def keys(self) -> Any:
-        return super().keys()
-
-    def values(self) -> Any:
-        return super().values()
-
-    def items(self) -> Any:
-        return super().items()
-
-    def __iter__(self) -> Iterator[str]:
-        return super().__iter__()
-
-    def __len__(self) -> int:
-        return super().__len__()
-
-    def __contains__(self, key: object) -> bool:
-        return super().__contains__(key)
