@@ -863,6 +863,7 @@ class TestOrOperator:
 class TestThreadSafety:
     def test_concurrent_independent_writes(self, tmp_path):
         import threading
+
         d = JsonBackedDict(tmp_path / 'data.json')
         barrier = threading.Barrier(10)
         errors = []
@@ -886,6 +887,7 @@ class TestThreadSafety:
 
     def test_concurrent_reads_and_writes(self, tmp_path):
         import threading
+
         d = JsonBackedDict(tmp_path / 'data.json', initial={'x': 0})
         stop = threading.Event()
         errors = []
@@ -917,6 +919,7 @@ class TestThreadSafety:
 
     def test_concurrent_proxy_mutations(self, tmp_path):
         import threading
+
         d = JsonBackedDict(tmp_path / 'data.json', initial={'items': []})
         barrier = threading.Barrier(10)
         errors = []
@@ -938,6 +941,7 @@ class TestThreadSafety:
 
     def test_disk_matches_memory_after_concurrent_writes(self, tmp_path):
         import threading
+
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p)
         barrier = threading.Barrier(10)

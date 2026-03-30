@@ -123,14 +123,10 @@ def _validate_json_value(value: Any, path: str = 'root') -> None:
     if isinstance(value, dict):
         for k, v in value.items():
             if not isinstance(k, str):
-                raise TypeError(
-                    f'Dict key at {path} must be str, got {type(k).__name__!r}: {k!r}'
-                )
+                raise TypeError(f'Dict key at {path} must be str, got {type(k).__name__!r}: {k!r}')
             _validate_json_value(v, f'{path}[{k!r}]')
         return
-    raise TypeError(
-        f'Value at {path} has unsupported type {type(value).__name__!r}: {value!r}'
-    )
+    raise TypeError(f'Value at {path} has unsupported type {type(value).__name__!r}: {value!r}')
 
 
 # --- Proxy unwrap helper ---
