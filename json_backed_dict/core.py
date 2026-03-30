@@ -186,6 +186,7 @@ class _ProxyDict:
     JsonBackedDict."""
 
     __slots__ = ('_data', '_root')
+    __hash__ = None
 
     def __init__(self, data: dict, root: 'JsonBackedDict') -> None:
         self._data = data
@@ -299,6 +300,7 @@ class _ProxyList:
     JsonBackedDict."""
 
     __slots__ = ('_data', '_root')
+    __hash__ = None
 
     def __init__(self, data: list, root: 'JsonBackedDict') -> None:
         self._data = data
