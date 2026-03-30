@@ -191,8 +191,8 @@ class _ProxyDict:
     __slots__ = ('_data', '_root')
 
     def __init__(self, data: dict, root: 'JsonBackedDict') -> None:
-        object.__setattr__(self, '_data', data)
-        object.__setattr__(self, '_root', root)
+        self._data = data
+        self._root = root
 
     def __getitem__(self, key: str) -> Any:
         return _wrap(self._data[key], self._root)
@@ -287,8 +287,8 @@ class _ProxyList:
     __slots__ = ('_data', '_root')
 
     def __init__(self, data: list, root: 'JsonBackedDict') -> None:
-        object.__setattr__(self, '_data', data)
-        object.__setattr__(self, '_root', root)
+        self._data = data
+        self._root = root
 
     def __getitem__(self, idx: Any) -> Any:
         result = self._data[idx]
