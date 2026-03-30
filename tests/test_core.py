@@ -107,7 +107,7 @@ class TestCRUD:
     def test_non_string_key_raises(self, tmp_path):
         d = JsonBackedDict(tmp_path / 'data.json')
         with pytest.raises(TypeError):
-            d[42] = 'value'  # type: ignore[index]
+            d[42] = 'value'  # type: ignore
 
 
 # ---------------------------------------------------------------------------
