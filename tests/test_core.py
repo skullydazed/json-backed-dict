@@ -858,3 +858,99 @@ class TestOrOperator:
         result = {'a': 1} | d
         assert type(result) is dict
         assert result == {'a': 1, 'b': 2}
+
+
+class TestThreadSafety:
+    def test_concurrent_independent_writes(self, tmp_path):
+        import threading
+        d = JsonBackedDict(tmp_path / 'data.json')
+        barrier = threading.Barrier(10)
+        errors = []
+
+        def worker(i):
+            barrier.wait()
+            try:
+                d[f'key_{i}'] = i
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert len(d) == 10
+        for i in range(10):
+            assert d[f'key_{i}'] == i
+
+    def test_concurrent_reads_and_writes(self, tmp_path):
+        import threading
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'x': 0})
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            for i in range(100):
+                try:
+                    d['x'] = i
+                except Exception as e:
+                    errors.append(e)
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    _ = d.get('x')
+                except Exception as e:
+                    errors.append(e)
+
+        readers = [threading.Thread(target=reader) for _ in range(5)]
+        writer_thread = threading.Thread(target=writer)
+        for r in readers:
+            r.start()
+        writer_thread.start()
+        writer_thread.join()
+        stop.set()
+        for r in readers:
+            r.join()
+        assert not errors
+
+    def test_concurrent_proxy_mutations(self, tmp_path):
+        import threading
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'items': []})
+        barrier = threading.Barrier(10)
+        errors = []
+
+        def worker(i):
+            barrier.wait()
+            try:
+                d['items'].append(i)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert len(d['items']) == 10
+
+    def test_disk_matches_memory_after_concurrent_writes(self, tmp_path):
+        import threading
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        barrier = threading.Barrier(10)
+
+        def worker(i):
+            barrier.wait()
+            d[f'k{i}'] = i
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        reloaded = JsonBackedDict(p)
+        assert dict(reloaded) == dict(d)

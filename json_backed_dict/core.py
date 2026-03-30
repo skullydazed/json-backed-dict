@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import threading
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterator
@@ -195,89 +196,106 @@ class _ProxyDict:
         self._root = root
 
     def __getitem__(self, key: str) -> Any:
-        return _wrap(self._data[key], self._root)
+        with self._root._lock:
+            return _wrap(self._data[key], self._root)
 
     def __setitem__(self, key: str, value: Any) -> None:
-        if not isinstance(key, str):
-            raise TypeError(f'Keys must be str, got {type(key).__name__!r}')
-        value = _deep_unwrap(value)
-        _validate_json_value(value)
-        self._data[key] = value
-        self._root._save()
+        with self._root._lock:
+            if not isinstance(key, str):
+                raise TypeError(f'Keys must be str, got {type(key).__name__!r}')
+            value = _deep_unwrap(value)
+            _validate_json_value(value)
+            self._data[key] = value
+            self._root._save()
 
     def __delitem__(self, key: str) -> None:
-        del self._data[key]
-        self._root._save()
+        with self._root._lock:
+            del self._data[key]
+            self._root._save()
 
     def __contains__(self, key: object) -> bool:
-        return key in self._data
+        with self._root._lock:
+            return key in self._data
 
     def __len__(self) -> int:
-        return len(self._data)
+        with self._root._lock:
+            return len(self._data)
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._data)
+        with self._root._lock:
+            return iter(list(self._data))
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, _ProxyDict):
-            return self._data == other._data
-        return self._data == other
+        with self._root._lock:
+            if isinstance(other, _ProxyDict):
+                return self._data == other._data
+            return self._data == other
 
     def __repr__(self) -> str:
-        return repr(self._data)
+        with self._root._lock:
+            return repr(self._data)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return _wrap(self._data.get(key, default), self._root)
+        with self._root._lock:
+            return _wrap(self._data.get(key, default), self._root)
 
     def keys(self) -> Any:
-        return self._data.keys()
+        with self._root._lock:
+            return list(self._data.keys())
 
     def values(self) -> Any:
-        return [_wrap(v, self._root) for v in self._data.values()]
+        with self._root._lock:
+            return [_wrap(v, self._root) for v in self._data.values()]
 
     def items(self) -> Any:
-        return [(k, _wrap(v, self._root)) for k, v in self._data.items()]
+        with self._root._lock:
+            return [(k, _wrap(v, self._root)) for k, v in self._data.items()]
 
     def update(self, other: Any = (), /, **kwargs: Any) -> None:
-        merged = dict(other)
-        merged.update(kwargs)
-        if not merged:
-            return
-        prepared: dict[str, Any] = {}
-        for k, v in merged.items():
-            if not isinstance(k, str):
-                raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
-            u = _deep_unwrap(v)
-            _validate_json_value(u)
-            prepared[k] = u
-        for k, v in prepared.items():
-            self._data[k] = v
-        self._root._save()
+        with self._root._lock:
+            merged = dict(other)
+            merged.update(kwargs)
+            if not merged:
+                return
+            prepared: dict[str, Any] = {}
+            for k, v in merged.items():
+                if not isinstance(k, str):
+                    raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
+                u = _deep_unwrap(v)
+                _validate_json_value(u)
+                prepared[k] = u
+            for k, v in prepared.items():
+                self._data[k] = v
+            self._root._save()
 
     def pop(self, key: str, *args: Any) -> Any:
-        if key not in self._data and args:
-            return args[0]
-        result = self._data.pop(key, *args)
-        self._root._save()
-        return result
+        with self._root._lock:
+            if key not in self._data and args:
+                return args[0]
+            result = self._data.pop(key, *args)
+            self._root._save()
+            return result
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        if key in self._data:
-            return _wrap(self._data[key], self._root)
-        default = _deep_unwrap(default)
-        _validate_json_value(default)
-        self._data[key] = default
-        self._root._save()
-        return _wrap(default, self._root)
+        with self._root._lock:
+            if key in self._data:
+                return _wrap(self._data[key], self._root)
+            default = _deep_unwrap(default)
+            _validate_json_value(default)
+            self._data[key] = default
+            self._root._save()
+            return _wrap(default, self._root)
 
     def popitem(self) -> tuple[str, Any]:
-        result = self._data.popitem()
-        self._root._save()
-        return result
+        with self._root._lock:
+            result = self._data.popitem()
+            self._root._save()
+            return result
 
     def clear(self) -> None:
-        self._data.clear()
-        self._root._save()
+        with self._root._lock:
+            self._data.clear()
+            self._root._save()
 
 
 class _ProxyList:
@@ -291,92 +309,109 @@ class _ProxyList:
         self._root = root
 
     def __getitem__(self, idx: Any) -> Any:
-        result = self._data[idx]
-        if isinstance(idx, slice):
-            return [_wrap(v, self._root) for v in result]
-        return _wrap(result, self._root)
+        with self._root._lock:
+            result = self._data[idx]
+            if isinstance(idx, slice):
+                return [_wrap(v, self._root) for v in result]
+            return _wrap(result, self._root)
 
     def __setitem__(self, idx: Any, value: Any) -> None:
-        if isinstance(idx, slice):
-            items = [_deep_unwrap(v) for v in value]
-            for i, item in enumerate(items):
-                _validate_json_value(item, f'root[{i}]')
-            self._data[idx] = items
-        else:
-            value = _deep_unwrap(value)
-            _validate_json_value(value)
-            self._data[idx] = value
-        self._root._save()
+        with self._root._lock:
+            if isinstance(idx, slice):
+                items = [_deep_unwrap(v) for v in value]
+                for i, item in enumerate(items):
+                    _validate_json_value(item, f'root[{i}]')
+                self._data[idx] = items
+            else:
+                value = _deep_unwrap(value)
+                _validate_json_value(value)
+                self._data[idx] = value
+            self._root._save()
 
     def __delitem__(self, idx: Any) -> None:
-        del self._data[idx]
-        self._root._save()
+        with self._root._lock:
+            del self._data[idx]
+            self._root._save()
 
     def __len__(self) -> int:
-        return len(self._data)
+        with self._root._lock:
+            return len(self._data)
 
     def __iter__(self) -> Iterator[Any]:
-        return (_wrap(v, self._root) for v in self._data)
+        with self._root._lock:
+            return iter([_wrap(v, self._root) for v in self._data])
 
     def __contains__(self, item: object) -> bool:
-        return _deep_unwrap(item) in self._data
+        with self._root._lock:
+            return _deep_unwrap(item) in self._data
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, _ProxyList):
-            return self._data == other._data
-        return self._data == other
+        with self._root._lock:
+            if isinstance(other, _ProxyList):
+                return self._data == other._data
+            return self._data == other
 
     def __repr__(self) -> str:
-        return repr(self._data)
+        with self._root._lock:
+            return repr(self._data)
 
     def __iadd__(self, other: Any) -> '_ProxyList':
         self.extend(other)
         return self
 
     def __imul__(self, n: int) -> '_ProxyList':
-        self._data *= n
-        self._root._save()
+        with self._root._lock:
+            self._data *= n
+            self._root._save()
         return self
 
     def append(self, value: Any) -> None:
-        value = _deep_unwrap(value)
-        _validate_json_value(value)
-        self._data.append(value)
-        self._root._save()
+        with self._root._lock:
+            value = _deep_unwrap(value)
+            _validate_json_value(value)
+            self._data.append(value)
+            self._root._save()
 
     def extend(self, values: Any) -> None:
-        items = [_deep_unwrap(v) for v in values]
-        for i, item in enumerate(items):
-            _validate_json_value(item, f'root[{i}]')
-        self._data.extend(items)
-        self._root._save()
+        with self._root._lock:
+            items = [_deep_unwrap(v) for v in values]
+            for i, item in enumerate(items):
+                _validate_json_value(item, f'root[{i}]')
+            self._data.extend(items)
+            self._root._save()
 
     def insert(self, idx: int, value: Any) -> None:
-        value = _deep_unwrap(value)
-        _validate_json_value(value)
-        self._data.insert(idx, value)
-        self._root._save()
+        with self._root._lock:
+            value = _deep_unwrap(value)
+            _validate_json_value(value)
+            self._data.insert(idx, value)
+            self._root._save()
 
     def remove(self, value: Any) -> None:
-        self._data.remove(_deep_unwrap(value))
-        self._root._save()
+        with self._root._lock:
+            self._data.remove(_deep_unwrap(value))
+            self._root._save()
 
     def pop(self, idx: int = -1) -> Any:
-        result = self._data.pop(idx)
-        self._root._save()
-        return result
+        with self._root._lock:
+            result = self._data.pop(idx)
+            self._root._save()
+            return result
 
     def clear(self) -> None:
-        self._data.clear()
-        self._root._save()
+        with self._root._lock:
+            self._data.clear()
+            self._root._save()
 
     def sort(self, *, key: Any = None, reverse: bool = False) -> None:
-        self._data.sort(key=key, reverse=reverse)
-        self._root._save()
+        with self._root._lock:
+            self._data.sort(key=key, reverse=reverse)
+            self._root._save()
 
     def reverse(self) -> None:
-        self._data.reverse()
-        self._root._save()
+        with self._root._lock:
+            self._data.reverse()
+            self._root._save()
 
 
 # --- Main class ---
@@ -403,16 +438,18 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         d['config']['timeout'] = 30   # persisted
         d['items'].append('new')      # persisted
 
-    **Concurrency and IPC limitations:** This class is not thread-safe or
-    process-safe. Concurrent writes from multiple threads or processes can
-    interleave, with the last ``os.replace`` call winning and silently
-    discarding earlier changes. Additionally, this is a *persistence* mechanism,
-    not IPC: if another process modifies the backing file, those changes are
-    never picked up by the current instance. To see external changes, construct
-    a new ``JsonBackedDict`` from the same path.
+    **Thread safety:** This class is thread-safe. Each public method acquires an
+    instance-level ``threading.RLock`` for its full duration, making individual
+    operations atomic. Compound operations across multiple method calls are NOT
+    atomic by default; callers needing compound atomicity may acquire
+    ``instance._lock`` externally. Process-safety is not provided: concurrent
+    writes from separate processes can still race, and external modifications to
+    the backing file are not detected by a running instance. To see external
+    changes, construct a new ``JsonBackedDict`` from the same path.
     """
 
     def __init__(self, path: str | Path, initial: dict[str, Any] | None = None) -> None:
+        self._lock = threading.RLock()
         self._path = Path(path)
         if self._path.exists():
             try:
@@ -427,98 +464,127 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             self._save()
 
     def _save(self) -> None:
+        # Use dict.__getitem__/__iter__ directly to bypass the proxy-wrapping
+        # __getitem__ override, ensuring raw values are serialized.
+        raw = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
         data = orjson.dumps(
-            dict(self),
+            raw,
             default=_orjson_default,
             option=orjson.OPT_INDENT_2,
         )
         _atomic_write(self._path, data)
 
+    def __contains__(self, key: object) -> bool:
+        with self._lock:
+            return super().__contains__(key)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return super().__len__()
+
+    def __iter__(self) -> Iterator[str]:
+        with self._lock:
+            return iter(list(super().__iter__()))
+
     def __getitem__(self, key: str) -> Any:
-        return _wrap(super().__getitem__(key), self)
+        with self._lock:
+            return _wrap(super().__getitem__(key), self)
 
     def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
-        return _wrap(super().get(key, default), self)
+        with self._lock:
+            return _wrap(super().get(key, default), self)
 
     def __setitem__(self, key: str, value: Any) -> None:
-        if not isinstance(key, str):
-            raise TypeError(f'Keys must be str, got {type(key).__name__!r}')
-        value = _deep_unwrap(value)
-        _validate_json_value(value)
-        super().__setitem__(key, value)
-        self._save()
+        with self._lock:
+            if not isinstance(key, str):
+                raise TypeError(f'Keys must be str, got {type(key).__name__!r}')
+            value = _deep_unwrap(value)
+            _validate_json_value(value)
+            super().__setitem__(key, value)
+            self._save()
 
     def __delitem__(self, key: str) -> None:
-        super().__delitem__(key)
-        self._save()
+        with self._lock:
+            super().__delitem__(key)
+            self._save()
 
     def update(self, other: Any = (), /, **kwargs: Any) -> None:  # type: ignore[override]
-        merged = dict(other)
-        merged.update(kwargs)
-        if not merged:
-            return
-        prepared: dict[str, Any] = {}
-        for k, v in merged.items():
-            if not isinstance(k, str):
-                raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
-            u = _deep_unwrap(v)
-            _validate_json_value(u)
-            prepared[k] = u
-        for k, v in prepared.items():
-            super().__setitem__(k, v)
-        self._save()
+        with self._lock:
+            merged = dict(other)
+            merged.update(kwargs)
+            if not merged:
+                return
+            prepared: dict[str, Any] = {}
+            for k, v in merged.items():
+                if not isinstance(k, str):
+                    raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
+                u = _deep_unwrap(v)
+                _validate_json_value(u)
+                prepared[k] = u
+            for k, v in prepared.items():
+                super().__setitem__(k, v)
+            self._save()
 
     def __ior__(self, other: Any) -> 'JsonBackedDict':
         self.update(other)
         return self
 
     def __or__(self, other: Any) -> dict:  # type: ignore[override]
-        if not isinstance(other, dict):
-            return NotImplemented  # type: ignore[return-value]
-        merged = dict(self)
-        merged.update(other)
-        return merged
+        with self._lock:
+            if not isinstance(other, dict):
+                return NotImplemented  # type: ignore[return-value]
+            merged = dict(self)
+            merged.update(other)
+            return merged
 
     def __ror__(self, other: Any) -> dict:
-        if not isinstance(other, dict):
-            return NotImplemented  # type: ignore[return-value]
-        merged = dict(other)
-        merged.update(self)
-        return merged
+        with self._lock:
+            if not isinstance(other, dict):
+                return NotImplemented  # type: ignore[return-value]
+            merged = dict(other)
+            merged.update(self)
+            return merged
 
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
-        if key not in self and args:
-            return args[0]
-        result = super().pop(key, *args)
-        self._save()
-        return result
+        with self._lock:
+            if key not in self and args:
+                return args[0]
+            result = super().pop(key, *args)
+            self._save()
+            return result
 
     def clear(self) -> None:
-        super().clear()
-        self._save()
+        with self._lock:
+            super().clear()
+            self._save()
 
     def setdefault(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
-        if key in self:
-            return _wrap(super().__getitem__(key), self)
-        default = _deep_unwrap(default)
-        _validate_json_value(default)
-        super().__setitem__(key, default)
-        self._save()
-        return _wrap(default, self)
+        with self._lock:
+            if key in self:
+                return _wrap(super().__getitem__(key), self)
+            default = _deep_unwrap(default)
+            _validate_json_value(default)
+            super().__setitem__(key, default)
+            self._save()
+            return _wrap(default, self)
 
     def popitem(self) -> tuple[str, Any]:
-        result = super().popitem()
-        self._save()
-        return result
+        with self._lock:
+            result = super().popitem()
+            self._save()
+            return result
 
     def values(self) -> Any:  # type: ignore[override]
-        return [_wrap(v, self) for v in super().values()]
+        with self._lock:
+            return [_wrap(v, self) for v in super().values()]
 
     def items(self) -> Any:  # type: ignore[override]
-        return [(k, _wrap(v, self)) for k, v in super().items()]
+        with self._lock:
+            return [(k, _wrap(v, self)) for k, v in super().items()]
 
     def __repr__(self) -> str:
-        return f'{type(self).__name__}({self._path!r}, {dict(self)!r})'
+        with self._lock:
+            return f'{type(self).__name__}({self._path!r}, {dict(self)!r})'
 
     # Prevent pickle/copy from bypassing __init__ and missing _path.
     # Unpickling calls __init__(path), which reloads from the file. We do not
