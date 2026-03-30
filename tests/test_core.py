@@ -786,3 +786,75 @@ class TestUpdateNoWriteOnEmpty:
         mtime_before = p.stat().st_mtime_ns
         d.update()
         assert p.stat().st_mtime_ns == mtime_before
+
+
+# ---------------------------------------------------------------------------
+# 15. |= operator (in-place merge)
+# ---------------------------------------------------------------------------
+
+
+class TestIorOperator:
+    def test_ior_persists_to_file(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 1})
+        d |= {'b': 2}
+        assert load_raw(p) == {'a': 1, 'b': 2}
+
+    def test_ior_updates_in_memory(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        d |= {'b': 2}
+        assert dict(d) == {'a': 1, 'b': 2}
+
+    def test_ior_returns_self(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        result = d.__ior__({'b': 2})
+        assert result is d
+
+    def test_ior_validates_types(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        with pytest.raises(TypeError):
+            d |= {'b': object()}
+
+    def test_ior_validates_keys(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        with pytest.raises(TypeError):
+            d |= {1: 'bad_key'}  # type: ignore[operator]
+
+    def test_ior_atomic_on_validation_failure(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 1})
+        with pytest.raises(TypeError):
+            d |= {'good': 'ok', 'bad': object()}
+        # original content unchanged
+        assert dict(d) == {'a': 1}
+        assert load_raw(p) == {'a': 1}
+
+
+# ---------------------------------------------------------------------------
+# 16. | operator (non-mutating merge)
+# ---------------------------------------------------------------------------
+
+
+class TestOrOperator:
+    def test_or_returns_plain_dict(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        result = d | {'b': 2}
+        assert type(result) is dict
+
+    def test_or_merged_contents(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        result = d | {'b': 2}
+        assert result == {'a': 1, 'b': 2}
+
+    def test_or_does_not_mutate_original(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 1})
+        _ = d | {'b': 2}
+        assert dict(d) == {'a': 1}
+        assert load_raw(p) == {'a': 1}
+
+    def test_ror_plain_dict_or_jbd(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'b': 2})
+        result = {'a': 1} | d
+        assert type(result) is dict
+        assert result == {'a': 1, 'b': 2}
