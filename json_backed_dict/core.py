@@ -243,12 +243,15 @@ class _ProxyDict:
         merged.update(kwargs)
         if not merged:
             return
+        prepared: dict[str, Any] = {}
         for k, v in merged.items():
             if not isinstance(k, str):
                 raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
-            _validate_json_value(_deep_unwrap(v))
-        for k, v in merged.items():
-            self._data[k] = _deep_unwrap(v)
+            u = _deep_unwrap(v)
+            _validate_json_value(u)
+            prepared[k] = u
+        for k, v in prepared.items():
+            self._data[k] = v
         self._root._save()
 
     def pop(self, key: str, *args: Any) -> Any:
@@ -454,13 +457,34 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         merged.update(kwargs)
         if not merged:
             return
+        prepared: dict[str, Any] = {}
         for k, v in merged.items():
             if not isinstance(k, str):
                 raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
-            _validate_json_value(_deep_unwrap(v))
-        for k, v in merged.items():
-            super().__setitem__(k, _deep_unwrap(v))
+            u = _deep_unwrap(v)
+            _validate_json_value(u)
+            prepared[k] = u
+        for k, v in prepared.items():
+            super().__setitem__(k, v)
         self._save()
+
+    def __ior__(self, other: Any) -> 'JsonBackedDict':
+        self.update(other)
+        return self
+
+    def __or__(self, other: Any) -> dict:  # type: ignore[override]
+        if not isinstance(other, dict):
+            return NotImplemented  # type: ignore[return-value]
+        merged = dict(self)
+        merged.update(other)
+        return merged
+
+    def __ror__(self, other: Any) -> dict:
+        if not isinstance(other, dict):
+            return NotImplemented  # type: ignore[return-value]
+        merged = dict(other)
+        merged.update(self)
+        return merged
 
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
         if key not in self and args:
