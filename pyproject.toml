@@ -1,0 +1,24 @@
+[build-system]
+requires = ['hatchling']
+build-backend = 'hatchling.build'
+
+[project]
+name = 'json-backed-dict'
+version = '0.1.0'
+requires-python = '>=3.9'
+dependencies = ['orjson>=3.9']
+
+[project.optional-dependencies]
+dev = ['pytest>=7.0', 'ruff', 'ty']
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+quote-style = 'single'
+
+[tool.ruff.lint]
+select = ['E', 'F', 'I']
+
+[tool.pytest.ini_options]
+testpaths = ['tests']
