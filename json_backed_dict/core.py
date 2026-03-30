@@ -155,12 +155,14 @@ def _atomic_write(dest: Path, data: bytes) -> None:
     tmp_path = None
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dest.parent, suffix='.tmp')
+        # os.fdopen takes ownership of fd; close it manually only if fdopen fails.
         try:
-            with os.fdopen(fd, 'wb') as f:
-                f.write(data)
+            f = os.fdopen(fd, 'wb')
         except Exception:
             os.close(fd)
             raise
+        with f:
+            f.write(data)
         os.replace(tmp_path, dest)
         tmp_path = None  # replaced successfully, nothing to clean up
     finally:
@@ -231,14 +233,16 @@ class _ProxyDict:
         return self._data.keys()
 
     def values(self) -> Any:
-        return (_wrap(v, self._root) for v in self._data.values())
+        return [_wrap(v, self._root) for v in self._data.values()]
 
     def items(self) -> Any:
-        return ((k, _wrap(v, self._root)) for k, v in self._data.items())
+        return [(k, _wrap(v, self._root)) for k, v in self._data.items()]
 
     def update(self, other: Any = (), /, **kwargs: Any) -> None:
         merged = dict(other)
         merged.update(kwargs)
+        if not merged:
+            return
         for k, v in merged.items():
             if not isinstance(k, str):
                 raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
@@ -395,6 +399,14 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
 
         d['config']['timeout'] = 30   # persisted
         d['items'].append('new')      # persisted
+
+    **Concurrency and IPC limitations:** This class is not thread-safe or
+    process-safe. Concurrent writes from multiple threads or processes can
+    interleave, with the last ``os.replace`` call winning and silently
+    discarding earlier changes. Additionally, this is a *persistence* mechanism,
+    not IPC: if another process modifies the backing file, those changes are
+    never picked up by the current instance. To see external changes, construct
+    a new ``JsonBackedDict`` from the same path.
     """
 
     def __init__(self, path: str | Path, initial: dict[str, Any] | None = None) -> None:
@@ -440,6 +452,8 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
     def update(self, other: Any = (), /, **kwargs: Any) -> None:  # type: ignore[override]
         merged = dict(other)
         merged.update(kwargs)
+        if not merged:
+            return
         for k, v in merged.items():
             if not isinstance(k, str):
                 raise TypeError(f'Keys must be str, got {type(k).__name__!r}: {k!r}')
@@ -474,16 +488,18 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         return result
 
     def values(self) -> Any:  # type: ignore[override]
-        return (_wrap(v, self) for v in super().values())
+        return [_wrap(v, self) for v in super().values()]
 
     def items(self) -> Any:  # type: ignore[override]
-        return ((k, _wrap(v, self)) for k, v in super().items())
+        return [(k, _wrap(v, self)) for k, v in super().items()]
 
     def __repr__(self) -> str:
         return f'{type(self).__name__}({self._path!r}, {dict(self)!r})'
 
     # Prevent pickle/copy from bypassing __init__ and missing _path.
-    # Note: since every mutation is immediately saved, unpickling reloads from
-    # the current file state, which is always identical to the in-memory state.
+    # Unpickling calls __init__(path), which reloads from the file. We do not
+    # pass the in-memory dict as `initial` because the file always reflects the
+    # current state and `initial` would be silently ignored anyway (the file
+    # exists at that point).
     def __reduce__(self) -> tuple[Any, ...]:
-        return (type(self), (self._path, dict(self)))
+        return (type(self), (self._path,))

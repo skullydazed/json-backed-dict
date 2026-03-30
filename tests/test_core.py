@@ -703,3 +703,86 @@ class TestAdditionalEdgeCases:
         p.write_bytes(b'{not valid json')
         with pytest.raises(ValueError, match=str(p)):
             JsonBackedDict(p)
+
+
+# ---------------------------------------------------------------------------
+# 12. values() / items() are re-iterable (not single-use generators)
+# ---------------------------------------------------------------------------
+
+
+class TestValuesItemsReIterable:
+    def test_values_can_be_iterated_twice(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1, 'b': 2})
+        vals = d.values()
+        assert list(vals) == list(vals)
+
+    def test_items_can_be_iterated_twice(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
+        items = d.items()
+        assert list(items) == list(items)
+
+    def test_proxy_values_can_be_iterated_twice(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'cfg': {'x': 1, 'y': 2}})
+        proxy = d['cfg']
+        vals = proxy.values()
+        assert list(vals) == list(vals)
+
+    def test_proxy_items_can_be_iterated_twice(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'cfg': {'x': 1}})
+        proxy = d['cfg']
+        items = proxy.items()
+        assert list(items) == list(items)
+
+
+# ---------------------------------------------------------------------------
+# 13. Double-close regression: write failure raises original error
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWriteDoubleClose:
+    def test_write_failure_raises_original_error_not_bad_fd(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+
+        original_fdopen = os.fdopen
+
+        def mock_fdopen(fd, mode):
+            f = original_fdopen(fd, mode)
+
+            class FailingFile:
+                def write(self, data):
+                    raise OSError('simulated write failure')
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    f.close()
+                    return False
+
+            return FailingFile()
+
+        with patch('json_backed_dict.core.os.fdopen', side_effect=mock_fdopen):
+            with pytest.raises(OSError, match='simulated write failure'):
+                d['k'] = 'v'
+
+
+# ---------------------------------------------------------------------------
+# 14. update() with empty input does not write
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateNoWriteOnEmpty:
+    def test_update_empty_dict_no_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 1})
+        mtime_before = p.stat().st_mtime_ns
+        d.update({})
+        assert p.stat().st_mtime_ns == mtime_before
+
+    def test_update_no_args_no_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 1})
+        mtime_before = p.stat().st_mtime_ns
+        d.update()
+        assert p.stat().st_mtime_ns == mtime_before
