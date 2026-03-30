@@ -5,11 +5,37 @@ build-backend = 'hatchling.build'
 [project]
 name = 'json-backed-dict'
 dynamic = ['version']
+description = 'A dict subclass that automatically persists every mutation to a JSON file'
+readme = 'README.md'
+license = 'MIT'
+authors = [
+    { name = 'Zach White', email = 'skullydazed@gmail.com' },
+]
+keywords = ['dict', 'json', 'persistence', 'storage', 'configuration']
+classifiers = [
+    'Development Status :: 4 - Beta',
+    'Intended Audience :: Developers',
+    'License :: OSI Approved :: MIT License',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.9',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Topic :: Software Development :: Libraries :: Python Modules',
+    'Topic :: Database',
+    'Typing :: Typed',
+]
 requires-python = '>=3.9'
 dependencies = ['orjson>=3.9']
 
 [project.optional-dependencies]
 dev = ['pytest>=7.0', 'ruff', 'ty', 'hatch']
+
+[project.urls]
+Homepage = 'https://github.com/skullydazed/json-backed-dict'
+Repository = 'https://github.com/skullydazed/json-backed-dict'
+'Bug Tracker' = 'https://github.com/skullydazed/json-backed-dict/issues'
 
 [tool.hatch.version]
 path = 'json_backed_dict/__init__.py'
