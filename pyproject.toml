@@ -41,7 +41,7 @@ Repository = 'https://github.com/skullydazed/json-backed-dict'
 path = 'json_backed_dict/__init__.py'
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 
 [tool.ruff.format]
 quote-style = 'single'

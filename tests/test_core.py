@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import orjson
@@ -220,6 +221,11 @@ class TestReadOps:
         d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
         assert list(d.items()) == [('a', 1)]
 
+    def test_reversed(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1, 'b': 2, 'c': 3})
+        result = list(reversed(d))
+        assert result == ['c', 'b', 'a']
+
     def test_get_existing(self, tmp_path):
         d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
         assert d.get('a') == 1
@@ -417,10 +423,12 @@ class TestTimedeltaRoundTrip:
     def test_negative_timedelta_to_str(self):
         assert _timedelta_to_str(timedelta(hours=-1)) == '-1h'
         assert _timedelta_to_str(timedelta(days=-2, hours=-3)) == '-2d3h'
+        assert _timedelta_to_str(timedelta(microseconds=-500)) == '-500us'
 
     def test_negative_timedelta_from_str(self):
         assert _str_to_timedelta('-1h') == timedelta(hours=-1)
         assert _str_to_timedelta('-2d3h') == timedelta(days=-2, hours=-3)
+        assert _str_to_timedelta('-500us') == timedelta(microseconds=-500)
 
     def test_round_trip_simple(self, tmp_path):
         p = tmp_path / 'data.json'
@@ -858,3 +866,156 @@ class TestOrOperator:
         result = {'a': 1} | d
         assert type(result) is dict
         assert result == {'a': 1, 'b': 2}
+
+    def test_or_does_not_leak_nested_dict(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'nested': {'key': 'val'}})
+        result = d | {'other': 1}
+        result['nested']['key'] = 'hacked'
+        assert d['nested']['key'] == 'val'
+        assert load_raw(p)['nested']['key'] == 'val'
+
+    def test_or_does_not_leak_nested_list(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'items': [1, 2]})
+        result = d | {'other': 1}
+        result['items'].append(99)
+        assert d['items'] == [1, 2]
+        assert load_raw(p)['items'] == [1, 2]
+
+    def test_ror_does_not_leak_nested_dict(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'b': 2, 'nested': {'key': 'val'}})
+        result: dict[str, Any] = cast(dict[str, Any], {'a': 1} | d)
+        result['nested']['key'] = 'hacked'
+        assert d['nested']['key'] == 'val'
+        assert load_raw(p)['nested']['key'] == 'val'
+
+    def test_ror_does_not_leak_nested_list(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'b': 2, 'items': [1, 2]})
+        result: dict[str, Any] = cast(dict[str, Any], {'a': 1} | d)
+        result['items'].append(99)
+        assert d['items'] == [1, 2]
+        assert load_raw(p)['items'] == [1, 2]
+
+
+class TestThreadSafety:
+    def test_concurrent_independent_writes(self, tmp_path):
+        import threading
+
+        d = JsonBackedDict(tmp_path / 'data.json')
+        barrier = threading.Barrier(10)
+        errors = []
+
+        def worker(i):
+            barrier.wait()
+            try:
+                d[f'key_{i}'] = i
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert len(d) == 10
+        for i in range(10):
+            assert d[f'key_{i}'] == i
+
+    def test_concurrent_reads_and_writes(self, tmp_path):
+        import threading
+
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'x': 0})
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            for i in range(100):
+                try:
+                    d['x'] = i
+                except Exception as e:
+                    errors.append(e)
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    _ = d.get('x')
+                except Exception as e:
+                    errors.append(e)
+
+        readers = [threading.Thread(target=reader) for _ in range(5)]
+        writer_thread = threading.Thread(target=writer)
+        for r in readers:
+            r.start()
+        writer_thread.start()
+        writer_thread.join()
+        stop.set()
+        for r in readers:
+            r.join()
+        assert not errors
+
+    def test_concurrent_proxy_mutations(self, tmp_path):
+        import threading
+
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'items': []})
+        barrier = threading.Barrier(10)
+        errors = []
+
+        def worker(i):
+            barrier.wait()
+            try:
+                d['items'].append(i)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert len(d['items']) == 10
+
+    def test_disk_matches_memory_after_concurrent_writes(self, tmp_path):
+        import threading
+
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        barrier = threading.Barrier(10)
+
+        def worker(i):
+            barrier.wait()
+            d[f'k{i}'] = i
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        reloaded = JsonBackedDict(p)
+        assert dict(reloaded) == dict(d)
+
+    def test_concurrent_reversed(self, tmp_path):
+        import threading
+
+        d = JsonBackedDict(tmp_path / 'data.json', initial={f'k{i}': i for i in range(100)})
+        barrier = threading.Barrier(10)
+        errors = []
+
+        def worker():
+            barrier.wait()
+            try:
+                _ = list(reversed(d))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
