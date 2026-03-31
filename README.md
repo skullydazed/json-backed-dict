@@ -115,7 +115,7 @@ All dict keys must be `str`. Attempting to store any other type raises `TypeErro
 
 ## Limitations
 
-**Thread-safe, but not process-safe.** Each public method acquires an instance-level lock for its full duration, making individual operations atomic. Concurrent writes from multiple processes can still interleave: each write creates a temp file and calls `os.replace`, so the last writer wins and earlier changes are silently lost.
+**Thread-safe, but not process-safe.** Methods implemented by `JsonBackedDict` acquire an instance-level lock for their full duration, making individual operations on a single instance atomic. Concurrent writes from multiple processes can still interleave: each write creates a temp file and calls `os.replace`, so the last writer wins and earlier changes are silently lost.
 
 **Not an IPC mechanism.** If another process modifies the backing file, the current instance will never see those changes. To pick up external changes, construct a new `JBD` from the same path.
 
