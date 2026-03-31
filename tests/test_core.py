@@ -221,6 +221,11 @@ class TestReadOps:
         d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
         assert list(d.items()) == [('a', 1)]
 
+    def test_reversed(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1, 'b': 2, 'c': 3})
+        result = list(reversed(d))
+        assert result == ['c', 'b', 'a']
+
     def test_get_existing(self, tmp_path):
         d = JsonBackedDict(tmp_path / 'data.json', initial={'a': 1})
         assert d.get('a') == 1
@@ -993,3 +998,24 @@ class TestThreadSafety:
 
         reloaded = JsonBackedDict(p)
         assert dict(reloaded) == dict(d)
+
+    def test_concurrent_reversed(self, tmp_path):
+        import threading
+
+        d = JsonBackedDict(tmp_path / 'data.json', initial={f'k{i}': i for i in range(100)})
+        barrier = threading.Barrier(10)
+        errors = []
+
+        def worker():
+            barrier.wait()
+            try:
+                _ = list(reversed(d))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors

@@ -576,6 +576,10 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         with self._lock:
             return list(dict.__iter__(self))
 
+    def __reversed__(self):
+        with self._lock:
+            return reversed(list(dict.__iter__(self)))
+
     def values(self) -> Any:  # type: ignore[override]
         with self._lock:
             return [_wrap(dict.__getitem__(self, k), self) for k in dict.__iter__(self)]
