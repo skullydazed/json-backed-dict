@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import orjson
@@ -860,6 +861,38 @@ class TestOrOperator:
         result = {'a': 1} | d
         assert type(result) is dict
         assert result == {'a': 1, 'b': 2}
+
+    def test_or_does_not_leak_nested_dict(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'nested': {'key': 'val'}})
+        result = d | {'other': 1}
+        result['nested']['key'] = 'hacked'
+        assert d['nested']['key'] == 'val'
+        assert load_raw(p)['nested']['key'] == 'val'
+
+    def test_or_does_not_leak_nested_list(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'items': [1, 2]})
+        result = d | {'other': 1}
+        result['items'].append(99)
+        assert d['items'] == [1, 2]
+        assert load_raw(p)['items'] == [1, 2]
+
+    def test_ror_does_not_leak_nested_dict(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'b': 2, 'nested': {'key': 'val'}})
+        result: dict[str, Any] = cast(dict[str, Any], {'a': 1} | d)
+        result['nested']['key'] = 'hacked'
+        assert d['nested']['key'] == 'val'
+        assert load_raw(p)['nested']['key'] == 'val'
+
+    def test_ror_does_not_leak_nested_list(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'b': 2, 'items': [1, 2]})
+        result: dict[str, Any] = cast(dict[str, Any], {'a': 1} | d)
+        result['items'].append(99)
+        assert d['items'] == [1, 2]
+        assert load_raw(p)['items'] == [1, 2]
 
 
 class TestThreadSafety:

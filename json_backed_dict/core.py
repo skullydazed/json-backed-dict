@@ -531,7 +531,7 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         with self._lock:
             if not isinstance(other, dict):
                 return NotImplemented  # type: ignore[return-value]
-            merged = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
+            merged = {k: _deep_unwrap(dict.__getitem__(self, k)) for k in dict.__iter__(self)}
             merged.update(other)
             return merged
 
@@ -540,7 +540,7 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             if not isinstance(other, dict):
                 return NotImplemented  # type: ignore[return-value]
             merged = dict(other)
-            merged.update({k: dict.__getitem__(self, k) for k in dict.__iter__(self)})
+            merged.update({k: _deep_unwrap(dict.__getitem__(self, k)) for k in dict.__iter__(self)})
             return merged
 
     def pop(self, key: str, *args: Any) -> Any:  # type: ignore[override]
