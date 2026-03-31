@@ -436,14 +436,15 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         d['config']['timeout'] = 30   # persisted
         d['items'].append('new')      # persisted
 
-    **Thread safety:** This class is thread-safe. Each public method acquires an
-    instance-level ``threading.RLock`` for its full duration, making individual
-    operations atomic. Compound operations across multiple method calls are NOT
-    atomic by default; callers needing compound atomicity may acquire
-    ``instance._lock`` externally. Process-safety is not provided: concurrent
-    writes from separate processes can still race, and external modifications to
-    the backing file are not detected by a running instance. To see external
-    changes, construct a new ``JsonBackedDict`` from the same path.
+    **Thread safety:** This class is thread-safe. Methods implemented by this
+    class acquire an instance-level ``threading.RLock`` for their full duration,
+    making individual operations atomic. Compound operations across multiple
+    method calls are NOT atomic by default; callers needing compound atomicity
+    may acquire ``instance._lock`` externally. Process-safety is not provided:
+    concurrent writes from separate processes can still race, and external
+    modifications to the backing file are not detected by a running instance.
+    To see external changes, construct a new ``JsonBackedDict`` from the same
+    path.
     """
 
     def __init__(self, path: str | Path, initial: dict[str, Any] | None = None) -> None:
