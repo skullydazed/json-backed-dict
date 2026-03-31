@@ -587,8 +587,10 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
     def copy(self) -> dict:  # type: ignore[override]
         # Returns a plain dict with raw (unwrapped) values; proxy objects are
         # an implementation detail of JsonBackedDict and are not exposed here.
+        # Nested mutable containers are deep-unwrapped so that callers cannot
+        # mutate the internal backing structures via the returned dict.
         with self._lock:
-            return {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
+            return {k: _deep_unwrap(dict.__getitem__(self, k)) for k in dict.__iter__(self)}
 
     def __repr__(self) -> str:
         with self._lock:
