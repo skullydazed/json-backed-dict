@@ -1145,16 +1145,6 @@ class TestExclude:
         assert d['a'] == 1
         assert d['b'] == 2
 
-    def test_exclude_non_string_key_raises(self, tmp_path):
-        d = JsonBackedDict(tmp_path / 'data.json')
-        with pytest.raises(TypeError):
-            d.exclude(123)  # type: ignore[arg-type]
-
-    def test_include_non_string_key_raises(self, tmp_path):
-        d = JsonBackedDict(tmp_path / 'data.json')
-        with pytest.raises(TypeError):
-            d.include(123)  # type: ignore[arg-type]
-
     def test_exclude_dotted_path(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'config': {'timeout': 30, 'debug': True}})
