@@ -171,10 +171,10 @@ class TestMutationMethods:
     def test_setdefault_key_present(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'k': 'existing'})
-        mtime_before = p.stat().st_mtime_ns
-        result = d.setdefault('k', 'other')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            result = d.setdefault('k', 'other')
         assert result == 'existing'
-        assert p.stat().st_mtime_ns == mtime_before
+        mock_replace.assert_not_called()
 
     def test_popitem_returns_pair(self, tmp_path):
         p = tmp_path / 'data.json'
@@ -701,10 +701,10 @@ class TestAdditionalEdgeCases:
     def test_pop_missing_with_default_no_file_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'a': 1})
-        mtime_before = p.stat().st_mtime_ns
-        result = d.pop('missing', 'fallback')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            result = d.pop('missing', 'fallback')
         assert result == 'fallback'
-        assert p.stat().st_mtime_ns == mtime_before
+        mock_replace.assert_not_called()
 
     def test_corrupted_json_raises_value_error_with_path(self, tmp_path):
         p = tmp_path / 'data.json'
@@ -784,16 +784,16 @@ class TestUpdateNoWriteOnEmpty:
     def test_update_empty_dict_no_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'a': 1})
-        mtime_before = p.stat().st_mtime_ns
-        d.update({})
-        assert p.stat().st_mtime_ns == mtime_before
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d.update({})
+        mock_replace.assert_not_called()
 
     def test_update_no_args_no_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'a': 1})
-        mtime_before = p.stat().st_mtime_ns
-        d.update()
-        assert p.stat().st_mtime_ns == mtime_before
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d.update()
+        mock_replace.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1019,3 +1019,256 @@ class TestThreadSafety:
         for t in threads:
             t.join()
         assert not errors
+
+
+# ---------------------------------------------------------------------------
+# Batch writes
+# ---------------------------------------------------------------------------
+
+
+class TestBatch:
+    def test_multiple_mutations_produce_one_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        replaced: list = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replaced.append((src, dst))
+            original_replace(src, dst)
+
+        with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
+            with d.batch():
+                d['a'] = 1
+                d['b'] = 2
+                d['c'] = 3
+
+        assert len(replaced) == 1
+        assert load_raw(p) == {'a': 1, 'b': 2, 'c': 3}
+
+    def test_nested_proxy_mutations_also_deferred(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'x': 0}})
+        replaced: list = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replaced.append((src, dst))
+            original_replace(src, dst)
+
+        with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
+            with d.batch():
+                d['cfg']['x'] = 1
+                d['cfg']['y'] = 2
+
+        assert len(replaced) == 1
+        assert load_raw(p)['cfg'] == {'x': 1, 'y': 2}
+
+    def test_exception_inside_batch_still_writes(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        with pytest.raises(RuntimeError):
+            with d.batch():
+                d['a'] = 1
+                raise RuntimeError('oops')
+
+        assert load_raw(p) == {'a': 1}
+        assert d._deferred_depth == 0
+
+    def test_save_inside_batch_forces_immediate_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        replaced: list = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replaced.append((src, dst))
+            original_replace(src, dst)
+
+        with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
+            with d.batch():
+                d['a'] = 1
+                d.save()  # force flush mid-batch
+                d['b'] = 2  # still deferred after save()
+
+        assert len(replaced) == 2  # one from save(), one from batch exit
+        assert load_raw(p) == {'a': 1, 'b': 2}
+
+
+# ---------------------------------------------------------------------------
+# Exclude / include keys
+# ---------------------------------------------------------------------------
+
+
+class TestExclude:
+    def test_excluded_key_does_not_trigger_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.exclude('k')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['k'] = 99
+        mock_replace.assert_not_called()
+        assert d['k'] == 99  # in memory
+
+    def test_excluded_key_present_in_file_on_other_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0, 'other': 0})
+        d.exclude('k')
+        d['k'] = 99  # no write
+        d['other'] = 1  # triggers write; k should appear with value 99
+        assert load_raw(p) == {'k': 99, 'other': 1}
+
+    def test_include_reenables_write_on_mutate(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.exclude('k')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['k'] = 1
+        mock_replace.assert_not_called()
+
+        d.include('k')
+        d['k'] = 2  # should now trigger a write
+        assert load_raw(p)['k'] == 2
+
+    def test_multiple_excluded_keys_no_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 0, 'b': 0})
+        d.exclude('a')
+        d.exclude('b')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['a'] = 1
+            d['b'] = 2
+        mock_replace.assert_not_called()
+
+    def test_non_excluded_key_still_triggers_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 0, 'b': 0})
+        d.exclude('a')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['b'] = 99  # not excluded
+        mock_replace.assert_called_once()
+
+    def test_exclude_dotted_path_no_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'config': {'timeout': 30, 'debug': True}})
+        d.exclude('config.debug')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['config']['debug'] = False  # excluded path
+        mock_replace.assert_not_called()
+
+    def test_exclude_dotted_path_sibling_still_writes(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'config': {'timeout': 30, 'debug': True}})
+        d.exclude('config.debug')
+        d['config']['timeout'] = 60  # not excluded — write should happen
+        assert load_raw(p)['config'] == {'timeout': 60, 'debug': True}
+
+    def test_exclude_top_level_suppresses_nested_writes(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'session': {'user': 'a', 'token': 'x'}})
+        d.exclude('session')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['session']['user'] = 'b'  # under excluded prefix
+            d['session']['token'] = 'y'
+        mock_replace.assert_not_called()
+
+    def test_excluded_popitem_does_not_trigger_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 1})
+        d.exclude('k')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            key, value = d.popitem()
+        assert (key, value) == ('k', 1)
+        mock_replace.assert_not_called()
+
+    def test_proxy_save_bypasses_deferred(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'x': 0}})
+        replaced: list = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replaced.append((src, dst))
+            original_replace(src, dst)
+
+        with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
+            with d.batch():
+                d['cfg']['x'] = 99
+                d['cfg'].save()  # explicit proxy flush; clears dirty flag
+
+        # proxy save() writes immediately; batch exit sees dirty=False, no second write
+        assert len(replaced) == 1
+        assert load_raw(p)['cfg']['x'] == 99
+
+    def test_nested_batch_flushes_once_on_outermost_exit(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        replaced: list = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replaced.append((src, dst))
+            original_replace(src, dst)
+
+        with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
+            with d.batch():
+                d['a'] = 1
+                with d.batch():  # nested — inner exit should NOT flush
+                    d['b'] = 2
+                # still inside outer batch here
+                d['c'] = 3
+            # outermost exit flushes once
+
+        assert len(replaced) == 1
+        assert load_raw(p) == {'a': 1, 'b': 2, 'c': 3}
+
+
+# ---------------------------------------------------------------------------
+# write_enabled flag
+# ---------------------------------------------------------------------------
+
+
+class TestWriteEnabled:
+    def test_write_enabled_false_suppresses_auto_saves(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.write_enabled = False
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['k'] = 99
+        mock_replace.assert_not_called()
+        assert d['k'] == 99  # in memory
+
+    def test_explicit_save_works_when_write_disabled(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.write_enabled = False
+        d['k'] = 42
+        d.save()
+        assert load_raw(p)['k'] == 42
+
+    def test_proxy_save_works_when_write_disabled(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'cfg': {'x': 0}})
+        d.write_enabled = False
+        d['cfg']['x'] = 7
+        d['cfg'].save()
+        assert load_raw(p)['cfg']['x'] == 7
+
+    def test_reenabling_write_resumes_auto_saves(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.write_enabled = False
+        d['k'] = 1
+        d.write_enabled = True
+        d['k'] = 2
+        assert load_raw(p)['k'] == 2
+
+    def test_batch_respects_write_enabled_false(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.write_enabled = False
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            with d.batch():
+                d['k'] = 99
+        # batch exit flushes only if write_enabled; it's False so no write
+        mock_replace.assert_not_called()
