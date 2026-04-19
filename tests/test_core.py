@@ -171,10 +171,10 @@ class TestMutationMethods:
     def test_setdefault_key_present(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'k': 'existing'})
-        mtime_before = p.stat().st_mtime_ns
-        result = d.setdefault('k', 'other')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            result = d.setdefault('k', 'other')
         assert result == 'existing'
-        assert p.stat().st_mtime_ns == mtime_before
+        mock_replace.assert_not_called()
 
     def test_popitem_returns_pair(self, tmp_path):
         p = tmp_path / 'data.json'
@@ -701,10 +701,10 @@ class TestAdditionalEdgeCases:
     def test_pop_missing_with_default_no_file_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'a': 1})
-        mtime_before = p.stat().st_mtime_ns
-        result = d.pop('missing', 'fallback')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            result = d.pop('missing', 'fallback')
         assert result == 'fallback'
-        assert p.stat().st_mtime_ns == mtime_before
+        mock_replace.assert_not_called()
 
     def test_corrupted_json_raises_value_error_with_path(self, tmp_path):
         p = tmp_path / 'data.json'
@@ -784,16 +784,16 @@ class TestUpdateNoWriteOnEmpty:
     def test_update_empty_dict_no_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'a': 1})
-        mtime_before = p.stat().st_mtime_ns
-        d.update({})
-        assert p.stat().st_mtime_ns == mtime_before
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d.update({})
+        mock_replace.assert_not_called()
 
     def test_update_no_args_no_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'a': 1})
-        mtime_before = p.stat().st_mtime_ns
-        d.update()
-        assert p.stat().st_mtime_ns == mtime_before
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d.update()
+        mock_replace.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
