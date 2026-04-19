@@ -657,8 +657,7 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             key, value = super().popitem()
             if not _is_excluded(key, self._exclude_keys):
                 self._save()
-            result = key, value
-            return result
+            return key, value
 
     def keys(self) -> Any:  # type: ignore[override]
         with self._lock:
