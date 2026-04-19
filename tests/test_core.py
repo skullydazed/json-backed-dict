@@ -1088,8 +1088,8 @@ class TestBatch:
         with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
             with d.batch():
                 d['a'] = 1
-                d.save()       # force flush mid-batch
-                d['b'] = 2    # still deferred after save()
+                d.save()  # force flush mid-batch
+                d['b'] = 2  # still deferred after save()
 
         assert len(replaced) == 2  # one from save(), one from batch exit
         assert load_raw(p) == {'a': 1, 'b': 2}
