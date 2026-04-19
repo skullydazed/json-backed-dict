@@ -654,8 +654,10 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
 
     def popitem(self) -> tuple[str, Any]:
         with self._lock:
-            result = super().popitem()
-            self._save()
+            key, value = super().popitem()
+            if not _is_excluded(key, self._exclude_keys):
+                self._save()
+            result = key, value
             return result
 
     def keys(self) -> Any:  # type: ignore[override]

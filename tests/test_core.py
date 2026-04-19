@@ -1172,6 +1172,15 @@ class TestExclude:
             d['session']['token'] = 'y'
         mock_replace.assert_not_called()
 
+    def test_excluded_popitem_does_not_trigger_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 1})
+        d.exclude('k')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            key, value = d.popitem()
+        assert (key, value) == ('k', 1)
+        mock_replace.assert_not_called()
+
     def test_proxy_save_bypasses_deferred(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'cfg': {'x': 0}})
