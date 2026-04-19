@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import tempfile
@@ -127,6 +128,35 @@ def _validate_json_value(value: Any, path: str = 'root') -> None:
             _validate_json_value(v, f'{path}[{k!r}]')
         return
     raise TypeError(f'Value at {path} has unsupported type {type(value).__name__!r}: {value!r}')
+
+
+# --- Exclusion helper ---
+
+
+def _apply_exclusions(data: dict, exclude_paths: set[str]) -> dict:
+    """Return a copy of *data* with all dotted paths in *exclude_paths* removed.
+
+    Top-level paths (no dot) drop the key entirely. Dotted paths recurse into
+    nested dicts. Non-dict values along a dotted path are left untouched.
+    """
+    top_level: set[str] = set()
+    nested: dict[str, set[str]] = {}
+    for path in exclude_paths:
+        head, _, tail = path.partition('.')
+        if tail:
+            nested.setdefault(head, set()).add(tail)
+        else:
+            top_level.add(head)
+
+    result: dict = {}
+    for k, v in data.items():
+        if k in top_level:
+            continue
+        if k in nested and isinstance(v, dict):
+            result[k] = _apply_exclusions(v, nested[k])
+        else:
+            result[k] = v
+    return result
 
 
 # --- Proxy unwrap helper ---
@@ -294,6 +324,10 @@ class _ProxyDict:
             self._data.clear()
             self._root._save()
 
+    def save(self) -> None:
+        """Explicitly flush to disk, bypassing batch mode."""
+        self._root._save(force=True)
+
 
 class _ProxyList:
     """Transparent proxy for a nested list that propagates mutations to the root
@@ -411,6 +445,10 @@ class _ProxyList:
             self._data.reverse()
             self._root._save()
 
+    def save(self) -> None:
+        """Explicitly flush to disk, bypassing batch mode."""
+        self._root._save(force=True)
+
 
 # --- Main class ---
 
@@ -450,6 +488,9 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
     def __init__(self, path: str | Path, initial: dict[str, Any] | None = None) -> None:
         self._lock = threading.RLock()
         self._path = Path(path)
+        self._deferred: bool = False
+        self._exclude_keys: set[str] = set()
+        self.write_enabled: bool = True
         if self._path.exists():
             try:
                 raw = orjson.loads(self._path.read_bytes())
@@ -462,10 +503,14 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             super().__init__(initial or {})
             self._save()
 
-    def _save(self) -> None:
+    def _save(self, force: bool = False) -> None:
+        if not force and (self._deferred or not self.write_enabled):
+            return
         # Use dict.__getitem__/__iter__ directly to bypass the proxy-wrapping
         # __getitem__ override, ensuring raw values are serialized.
         raw = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
+        if self._exclude_keys:
+            raw = _apply_exclusions(raw, self._exclude_keys)
         data = orjson.dumps(
             raw,
             default=_orjson_default,
@@ -601,6 +646,54 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         with self._lock:
             raw = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
             return f'{type(self).__name__}({self._path!r}, {raw!r})'
+
+    @contextlib.contextmanager
+    def batch(self):
+        """Context manager that defers all disk writes until the block exits.
+
+        Multiple mutations inside the block produce exactly one file write::
+
+            with d.batch():
+                d['a'] = 1
+                d['nested']['key'] = 2  # proxy mutations also deferred
+            # single write here
+
+        If an exception propagates out of the block, the write still happens so
+        that any mutations that did succeed are not silently lost.
+        """
+        with self._lock:
+            self._deferred = True
+            try:
+                yield self
+            finally:
+                self._deferred = False
+                self._save()
+
+    def exclude(self, key: str) -> None:
+        """Prevent *key* from appearing in future disk writes.
+
+        *key* may be a dotted path to a nested value, e.g. ``'config.timeout'``
+        omits only that sub-key while the rest of ``config`` is still written.
+        The key and its value remain in memory. Call :meth:`include` to restore
+        persistence.
+        """
+        with self._lock:
+            self._exclude_keys.add(key)
+
+    def include(self, key: str) -> None:
+        """Re-enable disk persistence for a previously excluded key or path.
+
+        The next mutation (or explicit :meth:`save`) will write the key.
+        """
+        with self._lock:
+            self._exclude_keys.discard(key)
+
+    def save(self) -> None:
+        """Explicitly flush all non-excluded keys to disk.
+
+        Works even inside a :meth:`batch` block (bypasses deferral).
+        """
+        self._save(force=True)
 
     # Prevent pickle/copy from bypassing __init__ and missing _path.
     # Unpickling calls __init__(path), which reloads from the file. We do not
