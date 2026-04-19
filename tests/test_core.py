@@ -1101,68 +1101,76 @@ class TestBatch:
 
 
 class TestExclude:
-    def test_excluded_key_absent_from_file(self, tmp_path):
+    def test_excluded_key_does_not_trigger_write(self, tmp_path):
         p = tmp_path / 'data.json'
-        d = JsonBackedDict(p)
-        d.exclude('ephemeral')
-        d['persistent'] = 'yes'
-        d['ephemeral'] = 'no'
-
-        raw = load_raw(p)
-        assert 'persistent' in raw
-        assert 'ephemeral' not in raw
-
-    def test_excluded_key_present_in_memory(self, tmp_path):
-        p = tmp_path / 'data.json'
-        d = JsonBackedDict(p)
-        d.exclude('tmp')
-        d['tmp'] = 'value'
-
-        assert d['tmp'] == 'value'
-
-    def test_include_reenables_persistence(self, tmp_path):
-        p = tmp_path / 'data.json'
-        d = JsonBackedDict(p)
+        d = JsonBackedDict(p, initial={'k': 0})
         d.exclude('k')
-        d['k'] = 'hidden'
-        assert 'k' not in load_raw(p)
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['k'] = 99
+        mock_replace.assert_not_called()
+        assert d['k'] == 99  # in memory
+
+    def test_excluded_key_present_in_file_on_other_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0, 'other': 0})
+        d.exclude('k')
+        d['k'] = 99      # no write
+        d['other'] = 1   # triggers write; k should appear with value 99
+        assert load_raw(p) == {'k': 99, 'other': 1}
+
+    def test_include_reenables_write_on_mutate(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'k': 0})
+        d.exclude('k')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['k'] = 1
+        mock_replace.assert_not_called()
 
         d.include('k')
-        d['other'] = 1  # triggers a write
-        assert load_raw(p)['k'] == 'hidden'
+        d['k'] = 2  # should now trigger a write
+        assert load_raw(p)['k'] == 2
 
-    def test_multiple_excluded_keys(self, tmp_path):
+    def test_multiple_excluded_keys_no_write(self, tmp_path):
         p = tmp_path / 'data.json'
-        d = JsonBackedDict(p)
+        d = JsonBackedDict(p, initial={'a': 0, 'b': 0})
         d.exclude('a')
         d.exclude('b')
-        d['a'] = 1
-        d['b'] = 2
-        d['c'] = 3
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['a'] = 1
+            d['b'] = 2
+        mock_replace.assert_not_called()
 
-        raw = load_raw(p)
-        assert raw == {'c': 3}
-        assert d['a'] == 1
-        assert d['b'] == 2
+    def test_non_excluded_key_still_triggers_write(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'a': 0, 'b': 0})
+        d.exclude('a')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['b'] = 99  # not excluded
+        mock_replace.assert_called_once()
 
-    def test_exclude_dotted_path(self, tmp_path):
+    def test_exclude_dotted_path_no_write(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'config': {'timeout': 30, 'debug': True}})
         d.exclude('config.debug')
-        d['config']['timeout'] = 60
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['config']['debug'] = False  # excluded path
+        mock_replace.assert_not_called()
 
-        raw = load_raw(p)
-        assert raw['config'] == {'timeout': 60}
-        assert d['config']['debug'] is True  # still in memory
-
-    def test_exclude_dotted_path_leaves_sibling_keys(self, tmp_path):
+    def test_exclude_dotted_path_sibling_still_writes(self, tmp_path):
         p = tmp_path / 'data.json'
-        d = JsonBackedDict(p, initial={'config': {'a': 1, 'b': 2, 'c': 3}})
-        d.exclude('config.b')
-        d['x'] = 0  # trigger write
+        d = JsonBackedDict(p, initial={'config': {'timeout': 30, 'debug': True}})
+        d.exclude('config.debug')
+        d['config']['timeout'] = 60  # not excluded — write should happen
+        assert load_raw(p)['config'] == {'timeout': 60, 'debug': True}
 
-        raw = load_raw(p)
-        assert raw['config'] == {'a': 1, 'c': 3}
+    def test_exclude_top_level_suppresses_nested_writes(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p, initial={'session': {'user': 'a', 'token': 'x'}})
+        d.exclude('session')
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['session']['user'] = 'b'   # under excluded prefix
+            d['session']['token'] = 'y'
+        mock_replace.assert_not_called()
 
     def test_proxy_save_bypasses_deferred(self, tmp_path):
         p = tmp_path / 'data.json'
