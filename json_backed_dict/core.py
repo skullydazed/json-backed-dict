@@ -325,8 +325,9 @@ class _ProxyDict:
             self._root._save()
 
     def save(self) -> None:
-        """Explicitly flush to disk, bypassing batch mode."""
-        self._root._save(force=True)
+        """Explicitly flush to disk, bypassing batch mode and write_enabled."""
+        with self._root._lock:
+            self._root._save(force=True)
 
 
 class _ProxyList:
@@ -446,8 +447,9 @@ class _ProxyList:
             self._root._save()
 
     def save(self) -> None:
-        """Explicitly flush to disk, bypassing batch mode."""
-        self._root._save(force=True)
+        """Explicitly flush to disk, bypassing batch mode and write_enabled."""
+        with self._root._lock:
+            self._root._save(force=True)
 
 
 # --- Main class ---
@@ -474,6 +476,17 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         d['config']['timeout'] = 30   # persisted
         d['items'].append('new')      # persisted
 
+    **Write control:** By default every mutation triggers an immediate disk
+    write. Three opt-in mechanisms let callers take control:
+
+    - ``write_enabled = False`` — suppresses all auto-saves; call
+      :meth:`save` explicitly to flush.
+    - :meth:`batch` context manager — defers writes across a block and
+      produces at most one flush on exit (respects ``write_enabled``).
+    - :meth:`exclude` / :meth:`include` — permanently omit specific keys or
+      dotted sub-key paths (e.g. ``'config.debug'``) from serialization while
+      keeping them in memory.
+
     **Thread safety:** This class is thread-safe. Methods implemented by this
     class acquire an instance-level ``threading.RLock`` for their full duration,
     making individual operations atomic. Compound operations across multiple
@@ -488,7 +501,8 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
     def __init__(self, path: str | Path, initial: dict[str, Any] | None = None) -> None:
         self._lock = threading.RLock()
         self._path = Path(path)
-        self._deferred: bool = False
+        self._deferred_depth: int = 0
+        self._dirty: bool = False
         self._exclude_keys: set[str] = set()
         self.write_enabled: bool = True
         if self._path.exists():
@@ -504,8 +518,11 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
             self._save()
 
     def _save(self, force: bool = False) -> None:
-        if not force and (self._deferred or not self.write_enabled):
+        if not force and (self._deferred_depth > 0 or not self.write_enabled):
+            if self._deferred_depth > 0:
+                self._dirty = True
             return
+        self._dirty = False
         # Use dict.__getitem__/__iter__ directly to bypass the proxy-wrapping
         # __getitem__ override, ensuring raw values are serialized.
         raw = {k: dict.__getitem__(self, k) for k in dict.__iter__(self)}
@@ -649,25 +666,29 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
 
     @contextlib.contextmanager
     def batch(self):
-        """Context manager that defers all disk writes until the block exits.
+        """Context manager that defers disk writes until the outermost block exits.
 
-        Multiple mutations inside the block produce exactly one file write::
+        Multiple mutations inside the block produce at most one file write on
+        exit. Nested ``batch()`` calls are safe — only the outermost block
+        triggers the flush::
 
             with d.batch():
                 d['a'] = 1
                 d['nested']['key'] = 2  # proxy mutations also deferred
-            # single write here
+            # flushed here only if mutations occurred, and only if write_enabled
 
-        If an exception propagates out of the block, the write still happens so
-        that any mutations that did succeed are not silently lost.
+        If an exception propagates out of the block, exit handling still
+        attempts a flush so successful mutations are not silently lost, subject
+        to ``write_enabled``.
         """
         with self._lock:
-            self._deferred = True
+            self._deferred_depth += 1
             try:
                 yield self
             finally:
-                self._deferred = False
-                self._save()
+                self._deferred_depth -= 1
+                if self._deferred_depth == 0 and self._dirty:
+                    self._save()
 
     def exclude(self, key: str) -> None:
         """Prevent *key* from appearing in future disk writes.
@@ -677,6 +698,8 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
         The key and its value remain in memory. Call :meth:`include` to restore
         persistence.
         """
+        if not isinstance(key, str):
+            raise TypeError(f'key must be str, got {type(key).__name__!r}')
         with self._lock:
             self._exclude_keys.add(key)
 
@@ -685,15 +708,19 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
 
         The next mutation (or explicit :meth:`save`) will write the key.
         """
+        if not isinstance(key, str):
+            raise TypeError(f'key must be str, got {type(key).__name__!r}')
         with self._lock:
             self._exclude_keys.discard(key)
 
     def save(self) -> None:
         """Explicitly flush all non-excluded keys to disk.
 
-        Works even inside a :meth:`batch` block (bypasses deferral).
+        Bypasses both batch deferral and ``write_enabled`` — use this when
+        you need a guaranteed write regardless of the current write mode.
         """
-        self._save(force=True)
+        with self._lock:
+            self._save(force=True)
 
     # Prevent pickle/copy from bypassing __init__ and missing _path.
     # Unpickling calls __init__(path), which reloads from the file. We do not

@@ -1073,7 +1073,7 @@ class TestBatch:
                 raise RuntimeError('oops')
 
         assert load_raw(p) == {'a': 1}
-        assert d._deferred is False
+        assert d._deferred_depth == 0
 
     def test_save_inside_batch_forces_immediate_write(self, tmp_path):
         p = tmp_path / 'data.json'
@@ -1145,6 +1145,16 @@ class TestExclude:
         assert d['a'] == 1
         assert d['b'] == 2
 
+    def test_exclude_non_string_key_raises(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json')
+        with pytest.raises(TypeError):
+            d.exclude(123)  # type: ignore[arg-type]
+
+    def test_include_non_string_key_raises(self, tmp_path):
+        d = JsonBackedDict(tmp_path / 'data.json')
+        with pytest.raises(TypeError):
+            d.include(123)  # type: ignore[arg-type]
+
     def test_exclude_dotted_path(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'config': {'timeout': 30, 'debug': True}})
@@ -1177,10 +1187,33 @@ class TestExclude:
         with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
             with d.batch():
                 d['cfg']['x'] = 99
-                d['cfg'].save()  # explicit proxy flush
+                d['cfg'].save()  # explicit proxy flush; clears dirty flag
 
-        assert len(replaced) == 2  # one from proxy save(), one from batch exit
+        # proxy save() writes immediately; batch exit sees dirty=False, no second write
+        assert len(replaced) == 1
         assert load_raw(p)['cfg']['x'] == 99
+
+    def test_nested_batch_flushes_once_on_outermost_exit(self, tmp_path):
+        p = tmp_path / 'data.json'
+        d = JsonBackedDict(p)
+        replaced: list = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replaced.append((src, dst))
+            original_replace(src, dst)
+
+        with patch('json_backed_dict.core.os.replace', side_effect=mock_replace):
+            with d.batch():
+                d['a'] = 1
+                with d.batch():  # nested — inner exit should NOT flush
+                    d['b'] = 2
+                # still inside outer batch here
+                d['c'] = 3
+            # outermost exit flushes once
+
+        assert len(replaced) == 1
+        assert load_raw(p) == {'a': 1, 'b': 2, 'c': 3}
 
 
 # ---------------------------------------------------------------------------
@@ -1192,10 +1225,10 @@ class TestWriteEnabled:
     def test_write_enabled_false_suppresses_auto_saves(self, tmp_path):
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'k': 0})
-        mtime_before = p.stat().st_mtime_ns
         d.write_enabled = False
-        d['k'] = 99
-        assert p.stat().st_mtime_ns == mtime_before
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            d['k'] = 99
+        mock_replace.assert_not_called()
         assert d['k'] == 99  # in memory
 
     def test_explicit_save_works_when_write_disabled(self, tmp_path):
@@ -1227,8 +1260,8 @@ class TestWriteEnabled:
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'k': 0})
         d.write_enabled = False
-        mtime_before = p.stat().st_mtime_ns
-        with d.batch():
-            d['k'] = 99
-        # batch exit calls _save() (not force), write_enabled=False blocks it
-        assert p.stat().st_mtime_ns == mtime_before
+        with patch('json_backed_dict.core.os.replace') as mock_replace:
+            with d.batch():
+                d['k'] = 99
+        # batch exit flushes only if write_enabled; it's False so no write
+        mock_replace.assert_not_called()
