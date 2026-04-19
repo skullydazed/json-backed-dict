@@ -677,15 +677,22 @@ class JsonBackedDict(dict):  # type: ignore[type-arg]
                 d['nested']['key'] = 2  # proxy mutations also deferred
             # flushed here only if mutations occurred, and only if write_enabled
 
+        This context manager does **not** hold ``self._lock`` for the full
+        duration of the block. Other threads may still read or mutate the
+        object concurrently; each individual operation remains atomic as usual.
+        Batch semantics only defer flushing to disk until the outermost batch
+        exits.
+
         If an exception propagates out of the block, exit handling still
         attempts a flush so successful mutations are not silently lost, subject
         to ``write_enabled``.
         """
         with self._lock:
             self._deferred_depth += 1
-            try:
-                yield self
-            finally:
+        try:
+            yield self
+        finally:
+            with self._lock:
                 self._deferred_depth -= 1
                 if self._deferred_depth == 0 and self._dirty:
                     self._save()
