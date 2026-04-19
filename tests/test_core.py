@@ -1114,8 +1114,8 @@ class TestExclude:
         p = tmp_path / 'data.json'
         d = JsonBackedDict(p, initial={'k': 0, 'other': 0})
         d.exclude('k')
-        d['k'] = 99      # no write
-        d['other'] = 1   # triggers write; k should appear with value 99
+        d['k'] = 99  # no write
+        d['other'] = 1  # triggers write; k should appear with value 99
         assert load_raw(p) == {'k': 99, 'other': 1}
 
     def test_include_reenables_write_on_mutate(self, tmp_path):
@@ -1168,7 +1168,7 @@ class TestExclude:
         d = JsonBackedDict(p, initial={'session': {'user': 'a', 'token': 'x'}})
         d.exclude('session')
         with patch('json_backed_dict.core.os.replace') as mock_replace:
-            d['session']['user'] = 'b'   # under excluded prefix
+            d['session']['user'] = 'b'  # under excluded prefix
             d['session']['token'] = 'y'
         mock_replace.assert_not_called()
 
